@@ -135,6 +135,7 @@ func main() {
 			ClientID:  clientID,
 			CommandID: uuid.NewString(),
 			Command:   cmd,
+			ID:        adminID,
 		})
 	}
 }
