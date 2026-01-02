@@ -1,4 +1,4 @@
-module getad-cli
+module posrelayd-viewer
 
 go 1.25.5
 

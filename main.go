@@ -45,97 +45,124 @@ func readPassword(prompt string) (string, error) {
 	return text[:len(text)-1], nil
 }
 
-func main() {
-	server := "ws://10.127.33.42:22233/ws"
-
-	var clientID string
-
-	fmt.Print("Введите id-подключения: ")
-	fmt.Scan(&clientID)
-
-	conn, _, err := websocket.DefaultDialer.Dial(server, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	adminID := uuid.NewString()
-
-	// === AUTH LOOP ===
+func authLoop(conn *websocket.Conn) string {
 	for {
+		var clientID string
+
+		fmt.Print("Введите id-подключения: ")
+		fmt.Scan(&clientID)
+
 		password, err := readPassword("Введите пароль: ")
 		if err != nil {
 			fmt.Println("Ошибка ввода пароля:", err)
 			continue
 		}
 
-		conn.WriteJSON(Message{
+		if err := conn.WriteJSON(Message{
 			Type:     "auth",
 			ClientID: clientID,
 			Password: password,
-		})
-
-		var authResp Message
-		if err := conn.ReadJSON(&authResp); err != nil {
-			fmt.Println("Ошибка ответа сервера:", err)
+		}); err != nil {
+			fmt.Println("Ошибка отправки:", err)
 			continue
 		}
 
-		if authResp.Type == "auth_ok" {
+		var resp Message
+		if err := conn.ReadJSON(&resp); err != nil {
+			fmt.Println("Ошибка сервера:", err)
+			continue
+		}
+
+		if resp.Type == "auth_ok" {
 			fmt.Println("Авторизация успешна")
-			break
+			return clientID
 		}
 
-		fmt.Println("Ошибка авторизации:", authResp.Error)
+		fmt.Println("Ошибка авторизации:", resp.Error)
 	}
+}
 
-	// === REGISTER ===
-	conn.WriteJSON(Message{
-		Type: "register",
-		Role: "admin",
-		ID:   adminID,
-	})
+func main() {
+	server := "ws://10.127.33.42:22233/ws"
 
-	go func() {
-		for {
-			var msg Message
-			if err := conn.ReadJSON(&msg); err != nil {
-				fmt.Println("Ошибка соединения:", err)
-				return
-			}
-
-			switch msg.Type {
-
-			case "interactive_prompt":
-				fmt.Print(msg.Prompt + " ")
-				reader := bufio.NewReader(os.Stdin)
-				answer, _ := reader.ReadString('\n')
-
-				conn.WriteJSON(Message{
-					Type:      "interactive_response",
-					CommandID: msg.CommandID,
-					Command:   answer[:len(answer)-1],
-				})
-
-			case "result":
-				fmt.Println("\n=== OUTPUT ===")
-				fmt.Println(msg.Result["output"])
-				fmt.Println(msg.Result["prompt"])
-			}
-		}
-	}()
-
-	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("> ")
-		cmd, _ := reader.ReadString('\n')
-		cmd = cmd[:len(cmd)-1]
+		conn, _, err := websocket.DefaultDialer.Dial(server, nil)
+		if err != nil {
+			fmt.Println("Ошибка подключения:", err)
+			return
+		}
+
+		clientID := authLoop(conn)
+		adminID := uuid.NewString()
 
 		conn.WriteJSON(Message{
-			Type:      "command",
-			ClientID:  clientID,
-			CommandID: uuid.NewString(),
-			Command:   cmd,
-			ID:        adminID,
+			Type: "register",
+			Role: "admin",
+			ID:   adminID,
 		})
+
+		sessionClosed := make(chan struct{})
+
+		go func() {
+			defer close(sessionClosed)
+
+			for {
+				var msg Message
+				if err := conn.ReadJSON(&msg); err != nil {
+					fmt.Println("\nСоединение разорвано, нажмите Enter для продолжения")
+					return
+				}
+
+				switch msg.Type {
+
+				case "interactive_prompt":
+					fmt.Print(msg.Prompt + " ")
+					reader := bufio.NewReader(os.Stdin)
+					answer, _ := reader.ReadString('\n')
+
+					conn.WriteJSON(Message{
+						Type:      "interactive_response",
+						CommandID: msg.CommandID,
+						Command:   answer[:len(answer)-1],
+					})
+
+				case "result":
+					fmt.Println("\n=== OUTPUT ===")
+					fmt.Println(msg.Result["output"])
+					fmt.Println(msg.Result["prompt"])
+
+				case "session_closed":
+					fmt.Println("\nСессия клиента завершена, нажмите Enter для продолжения")
+					return
+				}
+			}
+		}()
+
+		reader := bufio.NewReader(os.Stdin)
+
+		for {
+			select {
+			case <-sessionClosed:
+				conn.Close()
+				fmt.Println("\nВозврат к выбору подключения...\n")
+				goto RECONNECT
+
+			default:
+				fmt.Print("> ")
+				cmd, _ := reader.ReadString('\n')
+				cmd = cmd[:len(cmd)-1]
+
+				conn.WriteJSON(Message{
+					Type:      "command",
+					ClientID:  clientID,
+					CommandID: uuid.NewString(),
+					Command:   cmd,
+					ID:        adminID,
+				})
+			}
+		}
+
+	RECONNECT:
+		continue
 	}
 }
