@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -102,7 +103,22 @@ func main() {
 		})
 
 		sessionClosed := make(chan struct{})
+		inputCh := make(chan string)
 
+		// ===== ЕДИНСТВЕННЫЙ stdin reader =====
+		go func() {
+			reader := bufio.NewReader(os.Stdin)
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					close(inputCh)
+					return
+				}
+				inputCh <- strings.TrimRight(line, "\r\n")
+			}
+		}()
+
+		// ===== ЧТЕНИЕ СЕРВЕРА =====
 		go func() {
 			defer close(sessionClosed)
 
@@ -117,13 +133,13 @@ func main() {
 
 				case "interactive_prompt":
 					fmt.Print(msg.Prompt + " ")
-					reader := bufio.NewReader(os.Stdin)
-					answer, _ := reader.ReadString('\n')
+					answer := <-inputCh
 
 					conn.WriteJSON(Message{
 						Type:      "interactive_response",
 						CommandID: msg.CommandID,
-						Command:   answer[:len(answer)-1],
+						Command:   answer,
+						ID:        adminID,
 					})
 
 				case "result":
@@ -138,8 +154,7 @@ func main() {
 			}
 		}()
 
-		reader := bufio.NewReader(os.Stdin)
-
+		// ===== ОСНОВНОЙ ЦИКЛ =====
 		for {
 			select {
 			case <-sessionClosed:
@@ -149,8 +164,7 @@ func main() {
 
 			default:
 				fmt.Print("> ")
-				cmd, _ := reader.ReadString('\n')
-				cmd = cmd[:len(cmd)-1]
+				cmd := <-inputCh
 
 				conn.WriteJSON(Message{
 					Type:      "command",
