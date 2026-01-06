@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -24,10 +25,11 @@ type Message struct {
 	Error     string                 `json:"error,omitempty"`
 }
 
+// ===== ВВОД ПАРОЛЯ =====
+
 func readPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 
-	// Если stdin — терминал, читаем скрыто
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		b, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Println()
@@ -37,21 +39,24 @@ func readPassword(prompt string) (string, error) {
 		return string(b), nil
 	}
 
-	// Иначе (IDE, debug, pipe) — обычный ввод
 	reader := bufio.NewReader(os.Stdin)
 	text, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
-	return text[:len(text)-1], nil
+	return strings.TrimRight(text, "\r\n"), nil
 }
 
-func authLoop(conn *websocket.Conn) string {
-	for {
-		var clientID string
+// ===== АВТОРИЗАЦИЯ =====
 
+func authLoop(conn *websocket.Conn, reader *bufio.Reader) string {
+	for {
 		fmt.Print("Введите id-подключения: ")
-		fmt.Scan(&clientID)
+		clientID, err := reader.ReadString('\n')
+		if err != nil {
+			continue
+		}
+		clientID = strings.TrimSpace(clientID)
 
 		password, err := readPassword("Введите пароль: ")
 		if err != nil {
@@ -83,20 +88,35 @@ func authLoop(conn *websocket.Conn) string {
 	}
 }
 
-func main() {
-	server := "ws://10.127.33.42:22233/ws"
+// ===== ПОДКЛЮЧЕНИЕ С RETRY =====
 
+func connectWithRetry(server string) *websocket.Conn {
 	for {
 		conn, _, err := websocket.DefaultDialer.Dial(server, nil)
 		if err != nil {
-			fmt.Println("Ошибка подключения:", err)
-			return
+			fmt.Println("Сервер недоступен, повторная попытка через 10 секунд...")
+			time.Sleep(10 * time.Second)
+			continue
 		}
+		fmt.Println("Соединение с сервером установлено")
+		return conn
+	}
+}
 
-		clientID := authLoop(conn)
+// ===== MAIN =====
+
+func main() {
+	server := "ws://10.127.33.42:22233/ws"
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		// ===== ПОДКЛЮЧЕНИЕ С ПОВТОРАМИ =====
+		conn := connectWithRetry(server)
+
+		clientID := authLoop(conn, reader)
 		adminID := uuid.NewString()
 
-		conn.WriteJSON(Message{
+		_ = conn.WriteJSON(Message{
 			Type: "register",
 			Role: "admin",
 			ID:   adminID,
@@ -104,17 +124,22 @@ func main() {
 
 		sessionClosed := make(chan struct{})
 		inputCh := make(chan string)
+		stopInput := make(chan struct{})
 
-		// ===== ЕДИНСТВЕННЫЙ stdin reader =====
+		// ===== ЕДИНСТВЕННЫЙ stdin-reader =====
 		go func() {
-			reader := bufio.NewReader(os.Stdin)
+			defer close(inputCh)
 			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					close(inputCh)
+				select {
+				case <-stopInput:
 					return
+				default:
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						return
+					}
+					inputCh <- strings.TrimRight(line, "\r\n")
 				}
-				inputCh <- strings.TrimRight(line, "\r\n")
 			}
 		}()
 
@@ -125,30 +150,29 @@ func main() {
 			for {
 				var msg Message
 				if err := conn.ReadJSON(&msg); err != nil {
-					fmt.Println("\nСоединение разорвано, нажмите Enter для продолжения")
+					fmt.Println("\nСоединение разорвано")
 					return
 				}
 
 				switch msg.Type {
 
 				case "interactive_prompt":
-					fmt.Print(msg.Prompt + " ")
-					answer := <-inputCh
+					fmt.Print(msg.Prompt)
 
-					conn.WriteJSON(Message{
+					_ = conn.WriteJSON(Message{
 						Type:      "interactive_response",
 						CommandID: msg.CommandID,
-						Command:   answer,
+						Command:   "",
 						ID:        adminID,
 					})
 
 				case "result":
-					fmt.Println("\n=== OUTPUT ===")
-					fmt.Println(msg.Result["output"])
-					fmt.Println(msg.Result["prompt"])
+					if out, ok := msg.Result["output"].(string); ok {
+						fmt.Print(out)
+					}
 
 				case "session_closed":
-					fmt.Println("\nСессия клиента завершена, нажмите Enter для продолжения")
+					fmt.Println("\nСессия клиента завершена")
 					return
 				}
 			}
@@ -158,15 +182,17 @@ func main() {
 		for {
 			select {
 			case <-sessionClosed:
+				close(stopInput)
 				conn.Close()
-				fmt.Println("\nВозврат к выбору подключения...\n")
+				fmt.Println("\nПереподключение к серверу...\n")
 				goto RECONNECT
 
-			default:
-				fmt.Print("> ")
-				cmd := <-inputCh
+			case cmd, ok := <-inputCh:
+				if !ok {
+					continue
+				}
 
-				conn.WriteJSON(Message{
+				_ = conn.WriteJSON(Message{
 					Type:      "command",
 					ClientID:  clientID,
 					CommandID: uuid.NewString(),
