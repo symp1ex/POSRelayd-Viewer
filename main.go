@@ -27,7 +27,7 @@ type Message struct {
 
 // ===== ВВОД ПАРОЛЯ =====
 
-func readPassword(reader *bufio.Reader, prompt string) (string, error) {
+func readPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -36,13 +36,11 @@ func readPassword(reader *bufio.Reader, prompt string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-
-		// ВАЖНО: съедаем оставшийся '\n'
-		_, _ = reader.ReadString('\n')
-
 		return string(b), nil
 	}
 
+	// fallback (не-TTY)
+	reader := bufio.NewReader(os.Stdin)
 	text, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err
@@ -62,7 +60,7 @@ func authLoop(conn *websocket.Conn, reader *bufio.Reader) (string, error) {
 		}
 		clientID = strings.TrimSpace(clientID)
 
-		password, err := readPassword(reader, "Введите пароль: ")
+		password, err := readPassword("Введите пароль: ")
 		if err != nil {
 			fmt.Println("Ошибка ввода пароля:", err)
 			continue
