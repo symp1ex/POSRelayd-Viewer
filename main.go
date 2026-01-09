@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/term"
 )
 
@@ -23,6 +24,7 @@ type Message struct {
 	ID        string                 `json:"id,omitempty"`
 	Password  string                 `json:"password,omitempty"`
 	Error     string                 `json:"error,omitempty"`
+	ApiKey    string                 `json:"api_key,omitempty"`
 }
 
 // ===== ВВОД ПАРОЛЯ =====
@@ -109,6 +111,25 @@ func drainStdin(reader *bufio.Reader) {
 	}
 }
 
+func getMachineGUID() (string, error) {
+	key, err := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Cryptography`,
+		registry.QUERY_VALUE,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer key.Close()
+
+	guid, _, err := key.GetStringValue("MachineGuid")
+	if err != nil {
+		return "", err
+	}
+
+	return guid, nil
+}
+
 // ===== MAIN =====
 
 func main() {
@@ -118,6 +139,32 @@ func main() {
 	for {
 		// ---------- CONNECT ----------
 		conn := connectWithRetry(server)
+
+		if err := conn.WriteJSON(Message{
+			Type:   "admin_hello",
+			ApiKey: "123",
+		}); err != nil {
+			fmt.Println("Ошибка отправки admin_hello:", err)
+			conn.Close()
+			continue
+		}
+
+		var helloResp Message
+		if err := conn.ReadJSON(&helloResp); err != nil {
+			fmt.Println("Соединение разорвано сервером")
+			conn.Close()
+			continue
+		}
+
+		if helloResp.Type == "error" {
+			fmt.Println(helloResp.Error)
+			conn.Close()
+
+			fmt.Println("Повторная попытка через 10 секунд...")
+			time.Sleep(10 * time.Second)
+
+			continue
+		}
 
 		drainStdin(reader)
 
@@ -129,11 +176,18 @@ func main() {
 			continue
 		}
 
-		adminID := uuid.NewString()
+		adminID, err := getMachineGUID()
+		if err != nil {
+			fmt.Println("Не удалось получить MachineGuid:", err)
+			conn.Close()
+			continue
+		}
+
 		_ = conn.WriteJSON(Message{
-			Type: "register",
-			Role: "admin",
-			ID:   adminID,
+			Type:   "register",
+			Role:   "admin",
+			ID:     adminID,
+			ApiKey: "1234",
 		})
 
 		sessionClosed := make(chan struct{})
