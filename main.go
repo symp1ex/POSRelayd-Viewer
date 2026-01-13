@@ -94,12 +94,21 @@ func authLoop(conn *websocket.Conn, reader *bufio.Reader) (string, error) {
 
 func connectWithRetry(server string) *websocket.Conn {
 	for {
-		conn, _, err := websocket.DefaultDialer.Dial(server, nil)
+		conn, resp, err := websocket.DefaultDialer.Dial(server, nil)
 		if err != nil {
+
+			// === ВАЖНО: ПРОВЕРЯЕМ HTTP-ОТВЕТ ===
+			if resp != nil && resp.StatusCode == 403 {
+				fmt.Println("Подключение отклонено сервером: IP заблокирован")
+				time.Sleep(30 * time.Second)
+				os.Exit(1)
+			}
+
 			fmt.Println("Сервер недоступен, повторная попытка через 10 секунд...")
 			time.Sleep(10 * time.Second)
 			continue
 		}
+
 		fmt.Println("Соединение с сервером установлено")
 		return conn
 	}
@@ -184,10 +193,9 @@ func main() {
 		}
 
 		_ = conn.WriteJSON(Message{
-			Type:   "register",
-			Role:   "admin",
-			ID:     adminID,
-			ApiKey: "1234",
+			Type: "register",
+			Role: "admin",
+			ID:   adminID,
 		})
 
 		sessionClosed := make(chan struct{})
