@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -199,6 +201,22 @@ func main() {
 		})
 
 		sessionClosed := make(chan struct{})
+
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGINT)
+
+		go func() {
+			for range sigChan {
+				// НЕ завершаем админ
+				// Отправляем спец-команду клиенту
+				_ = conn.WriteJSON(Message{
+					Type:     "control",
+					ClientID: clientID,
+					ID:       adminID,
+					Command:  "CTRL_C",
+				})
+			}
+		}()
 
 		// ---------- SERVER READER ----------
 		go func() {
