@@ -124,7 +124,7 @@ func drainStdin(reader *bufio.Reader) {
 // ===== MAIN =====
 
 func main() {
-	server := "wss://pr-noip.sympl.su/ws"
+	server := "ws://10.127.33.42:22233/ws"
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
@@ -205,17 +205,7 @@ func main() {
 				}
 
 				switch msg.Type {
-
-				case "interactive_prompt":
-					fmt.Print(msg.Prompt)
-
-					_ = conn.WriteJSON(Message{
-						Type:      "interactive_response",
-						CommandID: msg.CommandID,
-						Command:   "",
-						ID:        adminID,
-					})
-
+				
 				case "result":
 					if out, ok := msg.Result["output"].(string); ok {
 						fmt.Print(out)
