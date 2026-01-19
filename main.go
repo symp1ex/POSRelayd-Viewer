@@ -28,8 +28,6 @@ type Message struct {
 	ApiKey    string                 `json:"api_key,omitempty"`
 }
 
-// ===== ВВОД ПАРОЛЯ =====
-
 func readPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 
@@ -53,7 +51,7 @@ func readPassword(prompt string) (string, error) {
 
 // ===== АВТОРИЗАЦИЯ =====
 
-func authLoop(conn *websocket.Conn, reader *bufio.Reader) (string, error) {
+func authLoop(conn *websocket.Conn, reader *bufio.Reader, adminID string) (string, error) {
 	for {
 		fmt.Print("Введите id-подключения: ")
 
@@ -71,15 +69,16 @@ func authLoop(conn *websocket.Conn, reader *bufio.Reader) (string, error) {
 
 		if err := conn.WriteJSON(Message{
 			Type:     "auth",
+			ID:       adminID,
 			ClientID: clientID,
 			Password: password,
 		}); err != nil {
-			return "", err // ← КЛЮЧЕВО
+			return "", err
 		}
 
 		var resp Message
 		if err := conn.ReadJSON(&resp); err != nil {
-			return "", err // ← КЛЮЧЕВО
+			return "", err
 		}
 
 		if resp.Type == "auth_ok" {
@@ -91,14 +90,14 @@ func authLoop(conn *websocket.Conn, reader *bufio.Reader) (string, error) {
 	}
 }
 
-// ===== ПОДКЛЮЧЕНИЕ С RETRY =====
+// ПОДКЛЮЧЕНИЕ С RETRY
 
 func connectWithRetry(server string) *websocket.Conn {
 	for {
 		conn, resp, err := websocket.DefaultDialer.Dial(server, nil)
 		if err != nil {
 
-			// === ВАЖНО: ПРОВЕРЯЕМ HTTP-ОТВЕТ ===
+			// ПРОВЕРЯЕМ HTTP-ОТВЕТ
 			if resp != nil && resp.StatusCode == 403 {
 				fmt.Println("Подключение отклонено сервером: IP заблокирован")
 				time.Sleep(30 * time.Second)
@@ -159,15 +158,15 @@ func main() {
 
 		drainStdin(reader)
 
+		adminID := uuid.NewString()
+
 		// ---------- AUTH ----------
-		clientID, err := authLoop(conn, reader)
+		clientID, err := authLoop(conn, reader, adminID)
 		if err != nil {
 			fmt.Println("Соединение потеряно во время авторизации\n")
 			conn.Close()
 			continue
 		}
-
-		adminID := uuid.NewString()
 
 		_ = conn.WriteJSON(Message{
 			Type: "register",
@@ -205,7 +204,7 @@ func main() {
 				}
 
 				switch msg.Type {
-				
+
 				case "result":
 					if out, ok := msg.Result["output"].(string); ok {
 						fmt.Print(out)
